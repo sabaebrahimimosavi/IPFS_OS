@@ -23,7 +23,20 @@
 #define OP_DOWNLOAD_CHUNK 0x91
 #define OP_DOWNLOAD_DONE  0x92
 
+#define OP_ERROR 0xFF
+
 static const char* g_sock_path = NULL;
+
+typedef struct {
+    char filename[256];
+    uint64_t total_size;
+    uint32_t chunk_size;
+    char hash_algo[32];
+    char temp_manifest_path[512];
+
+    FILE *tmp_fp; 
+} upload_S;
+
 
 // اول هدر 5 بایتی رو میگیره بعد payload
 ssize_t read_n(int fd, void* buf, size_t n) {
@@ -57,7 +70,30 @@ int send_frame(int fd, uint8_t op, const void* payload, uint32_t len) {
     return 0;
 }
 
+// ---- ERROR helper ----
+void send_error(int fd, const char *code, const char *message) {
+    char buf[512];
+
+    int n = snprintf(buf, sizeof(buf),
+                     "{\"code\":\"%s\",\"message\":\"%s\"}",
+                     code, message);
+    if (n < 0) {
+        return;
+    }
+    if (n >= (int)sizeof(buf)) {
+        n = (int)sizeof(buf) - 1;
+    }
+
+    send_frame(fd, OP_ERROR, buf, (uint32_t)n);
+}
+
+
 void handle_connection(int cfd) {
+    // یه ساختار میسازیم برای فایلی که قراره اپلود بشه که اسم و سایز کل و سایز چانک
+    // و الگو هش داخلشه. اینجا تعریف میکنیم که توی start مقدار بدیم بعدا هم ازش استفاده کنیم
+    upload_S up;
+    memset(&up, 0, sizeof(up));
+        
     for (;;) {
         uint8_t header[5];
         ssize_t r = read_n(cfd, header, 5); 
@@ -75,19 +111,119 @@ void handle_connection(int cfd) {
         }
 
         if (op == OP_UPLOAD_START) {
-            printf("[ENGINE] UPLOAD_START: name=\"%.*s\"\n", (int)len, (char*)payload);
-            fflush(stdout);
             // TODO: initialize upload state
+
+            printf("[ENGINE] OP_UPLOAD_START received\n");
+
+            upload_S *sess = &up;
+            size_t fn_len = len;
+            if (sess->tmp_fp) {
+                fclose(sess->tmp_fp);
+                sess->tmp_fp = NULL;
+            }
+
+            if (fn_len >= sizeof(sess->filename))
+                fn_len = sizeof(sess->filename) - 1;
+
+            // filename
+            memcpy(sess->filename, payload, fn_len);
+            sess->filename[fn_len] = '\0';
+            
+            sess->chunk_size = 256 * 1024;
+            strncpy(sess->hash_algo, "blake3", sizeof(sess->hash_algo)-1);
+            sess->total_size = 0;
+
+                    
+            // مسیر موقت manifest
+            snprintf(sess->temp_manifest_path, sizeof(sess->temp_manifest_path), "manifests/%s.tmp", sess->filename);
+
+            printf("[ENGINE] UPLOAD_START: name=\"%s\"\n", sess->filename);
+            printf("#chunk_size=%u algo=%s\n", sess->chunk_size, sess->hash_algo);
+
+            fflush(stdout);
         } 
         else if (op == OP_UPLOAD_CHUNK) {
             // TODO: process chunk (hash/store); here just drop
+            upload_S *sess = &up;
+            
+            if (!sess->tmp_fp) {
+                char path[512];
+                // پوشه tmp/ رو خودت یکبار با mkdir بساز:  mkdir -p tmp
+                snprintf(path, sizeof(path), "tmp/%s.data", sess->filename);
+
+                sess->tmp_fp = fopen(path, "wb");   // برای هر upload، از اول می‌نویسیم
+                if (!sess->tmp_fp) {
+                    perror("fopen tmp upload file");
+                    send_error(cfd, "E_IO", "Cannot open temp data file");
+                    break;
+                }
+            }
+
+            if (len > 0 && payload) {
+                size_t written = fwrite(payload, 1, len, sess->tmp_fp);
+                if (written != len) {
+                    perror("fwrite chunk");
+                    send_error(cfd, "E_IO", "Failed to write chunk");
+                } 
+                else {
+                    sess->total_size += len;
+                }
+            }
+            
         } 
         else if (op == OP_UPLOAD_FINISH) {
             // TODO: finalize DAG and compute real CID
-            const char* cid = "CID-PLACEHOLDER";
+            upload_S *sess = &up;
+            printf("[ENGINE] UPLOAD_FINISH for \"%s\", total_size=%llu\n", sess->filename, (unsigned long long)sess->total_size);
+
+             // اگر فایل موقت بازه، ببندش
+            if (sess->tmp_fp) {
+                fclose(sess->tmp_fp);
+                sess->tmp_fp = NULL;
+            }
+            FILE *mf = fopen(sess->temp_manifest_path, "w");
+            if (mf) {
+                fprintf(mf,
+                        "{"
+                        "\"version\":1,"
+                        "\"hash_algo\":\"%s\","
+                        "\"chunk_size\":%u,"
+                        "\"total_size\":%llu,"
+                        "\"filename\":\"%s\","
+                        "\"chunks\":[]"
+                        "}\n",
+                        sess->hash_algo,
+                        sess->chunk_size,
+                        (unsigned long long)sess->total_size,
+                        sess->filename);
+                fclose(mf);
+                } 
+            else {
+                perror("fopen manifest");
+                send_error(cfd, "E_IO", "Cannot write manifest");
+            }
+
+            const char *cid = "CID-PLACEHOLDER";
+
             printf("[ENGINE] UPLOAD_FINISH -> returning CID %s\n", cid);
             fflush(stdout);
-            send_frame(cfd, OP_UPLOAD_DONE, cid, (uint32_t)strlen(cid));
+
+            // JSON: {"cid":"CID-PLACEHOLDER"}
+            char json_buf[256];
+            int n = snprintf(json_buf, sizeof(json_buf),
+                            "{\"cid\":\"%s\"}", cid);
+            if (n < 0 || n >= (int)sizeof(json_buf)) {
+                send_error(cfd, "E_PROTO", "CID too long");
+            } else {
+                send_frame(cfd, OP_UPLOAD_DONE,
+                        json_buf, (uint32_t)n);
+            }
+
+
+            // const char* cid = "CID-PLACEHOLDER";
+            // printf("[ENGINE] UPLOAD_FINISH -> returning CID %s\n", cid);
+            // fflush(stdout);
+            // send_frame(cfd, OP_UPLOAD_DONE, cid, (uint32_t)strlen(cid));
         } 
         else if (op == OP_DOWNLOAD_START) {
             printf("[ENGINE] DOWNLOAD_START: cid=\"%.*s\"\n", (int)len, (char*)payload);
@@ -101,8 +237,17 @@ void handle_connection(int cfd) {
 
         free(payload);
     }
+
     close(cfd);
 }
+
+// فرمت pthread که اول نوشتن وارنینگ میده برای همین فرمت ارسالی رو اونطوری که تابع می خواد داره مینویسه
+void* connection_thread(void *arg) {
+    int cfd = (int)(intptr_t)arg;
+    handle_connection(cfd);
+    return NULL;
+}
+
 
 int main(int argc, char** argv) {
     if (argc != 2) {
@@ -127,10 +272,13 @@ int main(int argc, char** argv) {
 
     for (;;) {
         int cfd = accept(fd, NULL, NULL);
-        if (cfd < 0) { if (errno == EINTR) continue; perror("accept"); break; }
-        // Thread-per-connection keeps it readable for OS labs
+        if (cfd < 0) {
+            if (errno == EINTR) continue;
+            perror("accept");
+            break;
+        }
         pthread_t th;
-        pthread_create(&th, NULL, (void*(*)(void*))handle_connection, (void*)(intptr_t)cfd);
+        pthread_create(&th, NULL, connection_thread, (void*)(intptr_t)cfd);
         pthread_detach(th);
     }
 
