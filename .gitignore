@@ -1,0 +1,34 @@
+# === Binaries ===
+c_engine
+*.o
+*.exe
+
+# === Python ===
+__pycache__/
+*.pyc
+venv/
+
+# === Runtime data folders ===
+blocks/
+manifests/
+tmp/
+
+# Keep the folders but ignore contents
+blocks/*
+manifests/*
+tmp/*
+!blocks/.gitkeep
+!manifests/.gitkeep
+!tmp/.gitkeep
+
+# === Test files ===
+test
+test.bin
+test.txt
+out.bin
+out.txt
+
+# === OS junk ===
+.DS_Store
+Thumbs.db
+*.swp

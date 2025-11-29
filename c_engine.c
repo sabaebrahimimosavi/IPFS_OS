@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 //
-#include <sys/stat.h>   // برای mkdir
+#include <sys/stat.h>   // for mkdir
 
 #define OP_UPLOAD_START  0x01
 #define OP_UPLOAD_CHUNK  0x02
@@ -26,7 +26,7 @@
 #define OP_DOWNLOAD_DONE  0x92
 
 #define OP_ERROR 0xFF
-#define HASH_HEX_LEN 16   // خروجی تابع hash 32 بایت- میشه 64 کاراکتر
+#define HASH_HEX_LEN 16   // function output 32 byte hash = 64 character
 
 
 static const char* g_sock_path = NULL;
@@ -34,7 +34,7 @@ static const char* g_sock_path = NULL;
 typedef struct{
         uint32_t index;
         uint32_t size;
-        char hash[HASH_HEX_LEN + 1];  // هش به صورت hex
+        char hash[HASH_HEX_LEN + 1];  // hash (HEX)
 }chunk;
 
 
@@ -47,12 +47,12 @@ typedef struct {
 
     chunk *chunks; 
     uint32_t chunk_count;
-    uint32_t chunk_cap; // تعداد کل چانک هایی که میتونه دریافت کنه
+    uint32_t chunk_cap; // number of chunk that can receive
     char cid[HASH_HEX_LEN + 1];
 } upload_S;
 
 
-// اول هدر 5 بایتی رو میگیره بعد payload
+// first 5 byte header the payload
 ssize_t read_n(int fd, void* buf, size_t n) {
     size_t got = 0;
     while (got < n) {
@@ -84,7 +84,7 @@ int send_frame(int fd, uint8_t op, const void* payload, uint32_t len) {
     return 0;
 }
 
-// ---- ERROR helper ----
+// ERROR helper
 void send_error(int fd, const char *code, const char *message) {
     char buf[512];
 
@@ -101,7 +101,7 @@ void send_error(int fd, const char *code, const char *message) {
     send_frame(fd, OP_ERROR, buf, (uint32_t)n);
 }
 
-// این باید درست بشه که همه جانک ها لزوما اون سایز گفته شده نیستن!
+// should fix it!!!!!!!! not all chunk are the given size
 void chunk_hash_hex(const uint8_t *data, size_t len, char out_hex[HASH_HEX_LEN + 1]) {
     // FNV-1a 64-bit
     uint64_t h = 1469598103934665603ULL;
@@ -112,7 +112,7 @@ void chunk_hash_hex(const uint8_t *data, size_t len, char out_hex[HASH_HEX_LEN +
 
     static const char *hex = "0123456789abcdef";
 
-    int bytes = HASH_HEX_LEN / 2;   // مثلاً 16 کاراکتر → 8 بایت
+    int bytes = HASH_HEX_LEN / 2;   // 8 bytes -> 16 character
     for (int i = 0; i < bytes; i++) {
         uint8_t b = (uint8_t)(h >> (8 * i));
         out_hex[i * 2]     = hex[(b >> 4) & 0xF];
@@ -130,10 +130,254 @@ void ensure_dir(const char *path) {
     }
 }
 
+int file_exists(const char *path){
+    struct stat st;
+    return stat(path, &st)==0;
+}
+
+uint8_t *read_file_into_buf(const char* path , size_t *output_size){
+    FILE *rf = fopen(path, "rb");
+    if (!rf) return NULL;
+    if (fseek(rf, 0, SEEK_END) != 0) {
+        fclose(rf);
+        return NULL;
+    }
+    //current file offset (we just seeked the end -> give us file size)
+    long s = ftell(rf);
+    if (s<0){
+        fclose(rf);
+        return NULL;
+    }
+    //move file position to the start
+    rewind(rf);
+    uint8_t *buf = malloc((size_t)s+1);
+    if (!buf){
+        fclose(rf);
+        return NULL;
+    }
+    //read s byte from file to buf
+    size_t rd = fread(buf,1,(size_t)s,rf);
+    fclose(rf);
+    //If the number of bytes read is different from the expected file size:
+    // free the allocated buffer (prevent memory leak)
+    if (rd!=(size_t)s){
+        free(buf);
+        return NULL;
+    }
+    buf[rd] = '\0';
+    //store the actual bytes read there (tell the length of the returned data)
+    if (output_size) *output_size=rd;
+    return buf;
+}
+int parse_manifest_chunks(const uint8_t *buf , size_t buf_length , chunk **output_chunks){
+    const char *s = (const char*)buf;
+    // look for substring "chunks" in manifest
+    const char *chunks_pos = strstr(s, "\"chunks\"");
+    if (!chunks_pos) return -1;
+    const char *arr_start = strchr(chunks_pos, '[');
+    if (!arr_start) return -1;
+    const char *p = arr_start + 1;
+    // space for 16 chunk
+    uint32_t cap = 16;
+    uint32_t count = 0;
+    chunk *arr = malloc(cap * sizeof(chunk));
+    if (!arr) return -1;
+    while (1){
+        //look for "{" start of chunk info until it reach "}"
+        const char *obj = strchr(p, '{');
+        if (!obj) break;
+        const char *obj_end = strchr(obj, '}');
+        if (!obj_end) { free(arr); return -1; }
+        // chunk info -> {"index":..., "size":..., "hash":"..."}
+        const char *idx_pos  = strstr(obj, "\"index\"");
+        const char *size_pos = strstr(obj, "\"size\"");
+        const char *hash_pos = strstr(obj, "\"hash\"");
+        if (!idx_pos || !size_pos || !hash_pos) {
+            free(arr);
+            return -1;
+        }
+        unsigned long idx_val = 0, size_val = 0;
+        // skip all character until first digit then read it as index value(idx_val)
+        if (sscanf(idx_pos, "\"index\"%*[^0-9]%lu", &idx_val) != 1) {
+            free(arr);
+            return -1;
+        }
+        // read the size (same logic as reading index)
+        if (sscanf(size_pos, "\"size\"%*[^0-9]%lu", &size_val) != 1) {
+            free(arr);
+            return -1;
+        }
+        // extract the hash
+        // has_pos->'"'hash": "something"
+        // q->'"'hash": "something"
+        const char *q = strchr(hash_pos, '"');
+        if (!q) {
+            free(arr);
+            return -1;
+        }
+        // find the closing quote of "hash"
+        // "hash"q->':' "something"
+        q = strchr(q + 1, '"');
+        if (!q) {
+            free(arr);
+            return -1;
+        }
+        // find start of actual hash string
+        // "hash": val_start->'"'something"
+        const char *val_start = strchr(q + 1, '"');
+        if (!val_start) {
+            free(arr);
+            return -1;
+        }
+        // "hash": "val_start->'s'omething"
+        val_start++;
+        // "hash": "something val_start->'"'
+        const char *val_end = strchr(val_start, '"');
+        if (!val_end) {
+            free(arr);
+            return -1;
+        }
+        // val_start = start of string
+        // val_end = closing quote
+        // compute the length = val_end - val_start
+        size_t h_len = (size_t) (val_end - val_start);
+        if (h_len != HASH_HEX_LEN){
+            if (h_len > HASH_HEX_LEN) h_len = HASH_HEX_LEN;
+        }
+        // double the array size if there are more than 16 chunks
+        if (count == cap) {
+            uint32_t ncap = cap * 2;
+            chunk *narr = realloc(arr, ncap * sizeof(chunk));
+            if (!narr) { free(arr); return -1; }
+            arr = narr;
+            cap = ncap;
+        }
+        //fill the chunk struct
+        arr[count].index = (uint32_t)idx_val;
+        arr[count].size  = (uint32_t)size_val;
+        //clear hash buffer and copy hash character to array
+        memset(arr[count].hash, 0, HASH_HEX_LEN + 1);
+        memcpy(arr[count].hash, val_start, h_len);
+        arr[count].hash[HASH_HEX_LEN] = '\0';
+        // increment count of parsed chunks
+        count++;
+        //move the pointer
+        p= obj_end +1;
+    }
+    *output_chunks = arr;
+    return (int) count;
+}
+
+#define DOWNLOAD_BUF_SZ (256 * 1024)
+
+int send_block_chunk(int cfd, const chunk *ci) {
+    // build block path: blocks/aa/bb/<hash>.chunk
+    //Declares three strings to hold directory paths and the full file path
+    char dir1[64], dir2[128], filepath[512];
+    // build the first level directory from the first 2 character
+    snprintf(dir1, sizeof(dir1), "blocks/%c%c", ci->hash[0], ci->hash[1]);
+    // build the first level directory from character 3 and 4 of the hash (blocks/aa/bb/)
+    snprintf(dir2, sizeof(dir2), "%s/%c%c", dir1, ci->hash[2], ci->hash[3]);
+    // build the full file path blocks/aa/bb/<hash>.chunk
+    snprintf(filepath, sizeof(filepath), "%s/%s.chunk", dir2, ci->hash);
+    if (!file_exists(filepath)) {
+        send_error(cfd, "E_NOT_FOUND", "Block file missing");
+        return -1;
+    }
+    // open in binary mode
+    FILE *f = fopen(filepath, "rb");
+    if (!f) {
+        send_error(cfd, "E_IO", "Cannot open block file");
+        return -1;
+    }
+    // compute actual file size
+    //move the file pointer to the end
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        send_error(cfd, "E_IO", "Seek error");
+        return -1;
+    }
+    // get the size
+    long fsz = ftell(f);
+    if (fsz < 0) {
+        fclose(f);
+        send_error(cfd, "E_IO", "ftell error");
+        return -1;
+    }
+    // back to start
+    rewind(f);
+    if ((uint32_t)fsz != ci->size) {
+        // size mismatch
+        fclose(f);
+        send_error(cfd, "E_HASH_MISMATCH", "Block size mismatch");
+        return -1;
+    }
+
+    // temporary buffer for reading data
+    uint8_t buf[DOWNLOAD_BUF_SZ];
+    // buffer to hold the entire chunk
+    uint8_t *all = malloc(ci->size);
+    if (!all) {
+        fclose(f);
+        send_error(cfd, "E_MEM", "Cannot alloc chunk buffer");
+        return -1;
+    }
+    // read the entire file into memory
+    size_t read_total = fread(all, 1, ci->size, f);
+    // close it
+    fclose(f);
+    if (read_total != ci->size) {
+        free(all);
+        send_error(cfd, "E_IO", "Cannot read full block");
+        return -1;
+    }
+    // verify hash:
+    // compute the hex string of the chunk's hash
+    char computed_hash[HASH_HEX_LEN + 1];
+    chunk_hash_hex(all, read_total, computed_hash);
+    // compare the computed with the expected
+    if (strncmp(computed_hash, ci->hash, HASH_HEX_LEN) != 0) {
+        free(all);
+        send_error(cfd, "E_HASH_MISMATCH", "Hash mismatch for block");
+        return -1;
+    }
+    // send OP_DOWNLOAD_CHUNK frames
+    if (send_frame(cfd, OP_DOWNLOAD_CHUNK, all, (uint32_t)read_total) < 0) {
+        free(all);
+        return -1;
+    }
+
+    /*
+    // stream the chunk in DOWNLOAD_BUF_SZ frames
+    size_t left = read_total;
+    size_t offset = 0;
+    while (left > 0) {
+        uint32_t step = (left > DOWNLOAD_BUF_SZ) ? DOWNLOAD_BUF_SZ : (uint32_t)left;
+        if (send_frame(cfd, OP_DOWNLOAD_CHUNK, all + offset, step) < 0) {
+            free(all);
+            return -1;
+        }
+        offset += step;
+        left -= step;
+    }
+     */
+
+    // free memory
+    free(all);
+    return 0;
+}
+
+
 void handle_connection(int cfd) {
-    // یه ساختار میسازیم برای فایلی که قراره اپلود بشه که اسم و سایز کل و سایز چانک
-    // و الگو هش داخلشه. اینجا تعریف میکنیم که توی start مقدار بدیم بعدا هم ازش استفاده کنیم
-    
+    /*
+     * build a structure for the file that should be uploaded
+     * it contains :
+     * name
+     * whole size
+     * chunk size
+     * hash algo
+     * here we define : initialize value in "start" then use it later
+    */
     upload_S up;
     memset(&up, 0, sizeof(up));
         
@@ -162,7 +406,7 @@ void handle_connection(int cfd) {
 
             upload_S *sess = &up;
 
-            // اگه قبلا چانک شده پاک میکنیم
+            // if it chunks before then erase
             if (sess->chunks) {
                 free(sess->chunks);
                 sess->chunks = NULL;
@@ -204,14 +448,14 @@ void handle_connection(int cfd) {
                 break;
             }
 
-            // چانک ها رو هش میکنیم
+            // Hash the chunks
             char hash_hex[HASH_HEX_LEN + 1];
             chunk_hash_hex(payload, len, hash_hex);
 
             //blocks/ab/cd/hash
             ensure_dir("blocks");
 
-            //داریم پوشه تو در تو میسازیم
+            //Building nested folder
             char dir1[64];
             snprintf(dir1, sizeof(dir1), "blocks/%c%c", hash_hex[0], hash_hex[1]);
             ensure_dir(dir1);
@@ -223,7 +467,7 @@ void handle_connection(int cfd) {
             char filepath[256];
             snprintf(filepath, sizeof(filepath), "%s/%s.chunk", dir2, hash_hex);
 
-            // حالا چانک ها رو باید اونجا ذخیره کنیم
+            // Save chunks there
             FILE *fp = fopen(filepath, "wb");
             if (!fp) {
                 perror("fopen block");
@@ -242,10 +486,10 @@ void handle_connection(int cfd) {
             }
             fclose(fp);
 
-            // از روی تعداد چانک هایی که داریم ذخیره میکنیم باید اندازه کل فایل رو به دست بیاریم
+            // We get the total file size from the number of chunks we are storing
             sess->total_size += len;
             
-            // چون نمیدونیم اندازه فایل چقدره وقتی پر شد میایم افزایش میدیم   
+            // Increase it when it's full (because we don't know the file's size)
             if (sess->chunk_count == sess->chunk_cap) {
                 uint32_t new_cap;
                 if(sess->chunk_cap == 0) new_cap = 16;
@@ -261,7 +505,7 @@ void handle_connection(int cfd) {
                 sess->chunk_cap = new_cap;
             }
 
-            // چانک جدید اصافع میکنه
+            // Adding a new chunk
             uint32_t idx = sess->chunk_count;
             sess->chunks[idx].index = idx;
             sess->chunks[idx].size  = (uint32_t)len;
@@ -278,7 +522,7 @@ void handle_connection(int cfd) {
 
             ensure_dir("manifests");
 
-            // 1) manifest را به صورت موقت بنویسیم در فایل filename-based
+            // 1) Write the manifest temporarily in a filename-based file
             FILE *mf = fopen(sess->temp_manifest_path, "w");
             if (!mf) {
                 perror("fopen manifest");
@@ -313,7 +557,7 @@ void handle_connection(int cfd) {
             fprintf(mf, "]}\n");
             fclose(mf);
 
-            // 2) حالا manifest را از روی همین فایل می‌خوانیم تا روی آن hash بگیریم
+            // 2) Now we read the manifest from this file to get a hash on it
             FILE *rf = fopen(sess->temp_manifest_path, "rb");
             if (!rf) {
                 perror("fopen manifest for hash");
@@ -369,17 +613,17 @@ void handle_connection(int cfd) {
 
             printf("[ENGINE] computed CID=%s\n", cid_hex);
 
-            // 4) manifest نهایی را به اسم CID جابه‌جا کن: manifests/<cid>.json
+            // 4) Move the final manifest to the CID name: manifests/<cid>.json
             char final_manifest_path[512];
             snprintf(final_manifest_path, sizeof(final_manifest_path),
                     "manifests/%s.json", cid_hex);
 
             if (rename(sess->temp_manifest_path, final_manifest_path) < 0) {
                 perror("rename manifest");
-                // اگه rename fail شد، ولی باز هم CID رو برمی‌گردونیم.
+                // If the rename fails, we still return the CID
             }
 
-            // 5) CID را به gateway برگردانیم (رشته ساده)
+            // 5) Return the CID to the gateway (plain string)
             send_frame(cfd, OP_UPLOAD_DONE, cid_hex, (uint32_t)strlen(cid_hex));
 
             printf("[ENGINE] UPLOAD_FINISH -> returning CID %s\n", cid_hex);
@@ -391,6 +635,62 @@ void handle_connection(int cfd) {
             fflush(stdout);
             // TODO: look up CID, stream verified chunks
             // Minimal placeholder: no chunks, just DONE
+
+            //copy cid into local buffer
+            char cid_buf[HASH_HEX_LEN+1];
+            // if payload is too long , make it the size of buffer
+            size_t cid_len = len;
+            if(cid_len >= sizeof(cid_buf)){
+                cid_len = sizeof(cid_buf)-1;
+            }
+            //copy the cid into string
+            memcpy(cid_buf,payload,cid_len);
+            cid_buf[cid_len]='\0';
+            //check if the cid is valid
+            for (size_t i = 0; i < cid_len; i++) {
+                char c = cid_buf[i];
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+                    send_error(cfd, "E_BAD_CID", "Invalid CID");
+                    break;
+                }
+            }
+            //building manifest path
+            char manifest_path[512];
+            snprintf(manifest_path, sizeof (manifest_path), "manifests/%s.json" , cid_buf);
+            //check for manifest existence
+            if (!file_exists(manifest_path)){
+                send_error(cfd, "E_NOT_FOUND", "Manifest not found");
+            } else {
+                // if it exists then read it into memory
+                size_t mf_size = 0;
+                uint8_t *mf_buf = read_file_into_buf(manifest_path, &mf_size);
+                if (!mf_buf) {
+                    send_error(cfd, "E_IO", "Cannot read manifest");
+                } else {
+                    chunk *chunks = NULL;
+                    int n_chunks = parse_manifest_chunks(mf_buf, mf_size, &chunks);
+                    if (n_chunks <= 0) {
+                        free(mf_buf);
+                        send_error(cfd, "E_PROTO", "Malformed manifest");
+                    } else{
+                        int everything_ok=1;
+                        // iterate in correct order of chunks
+                        for (int i = 0; i < n_chunks; i++) {
+                            chunk *ci = &chunks[i];
+                            if (send_block_chunk(cfd, ci) < 0) {
+                                everything_ok = 0;
+                                break;
+                            }
+                        }
+                        if (everything_ok) {
+                            send_frame(cfd, OP_DOWNLOAD_DONE, NULL, 0);
+                        }
+                        // cleanup memory
+                        free(chunks);
+                        free(mf_buf);
+                    }
+                }
+            }
             send_frame(cfd, OP_DOWNLOAD_DONE, NULL, 0);
         } 
         else {
@@ -402,7 +702,10 @@ void handle_connection(int cfd) {
     close(cfd);
 }
 
-// فرمت pthread که اول نوشتن وارنینگ میده برای همین فرمت ارسالی رو اونطوری که تابع می خواد داره مینویسه
+
+// The pthread format that is written has a warning
+// Writing the "sent" format as the function required
+// I guess fix this ????????
 void* connection_thread(void *arg) {
     int cfd = (int)(intptr_t)arg;
     handle_connection(cfd);
