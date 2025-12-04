@@ -6,8 +6,8 @@ import json
 
 ENGINE_SOCK = "/tmp/cengine.sock"
 
-#کد های عملیاتی که باید با چیزی که توی c هست سازگار باشه
-#Gateway از ایناها استفاده  میکنه که بفهمه قراره چیکارکنه
+# opcode that should be the same in c_engine
+# gateway uses them to understand what operation should perform
 OP_UPLOAD_START = 0x01
 OP_UPLOAD_CHUNK = 0x02
 OP_UPLOAD_FINISH = 0x03
@@ -18,12 +18,14 @@ OP_DOWNLOAD_CHUNK = 0x91
 OP_DOWNLOAD_DONE  = 0x92
 
 # [ opcode (1 byte) | payload_length (4 byte)| payload ]
-# playload میشه داده ورودی بر اساس کاری که قراره بکنیم فرق داره (صفحه 7)
-#این تابع اون رو میگیره و تبدیل میکنه به ساختار رسمی ای که باید برای c بفرستیم
+# payload : input data , it is different based on what it supposes to do (page 7)
+# frame function get payload and turn it to the format that should be sent to c_engine
 def frame(op, payload: bytes):
     return struct.pack(">BI", op, len(payload)) + payload
 
-# C رو صدا میزنه - همه پیام ها رو براش میفرسته - پایخ ها رو میخونه وقتی OP_UPLOAD_DONE یا OP_DOWNLOAD_DONE n دید میاد بیرون 
+# call the c_engine
+# sent all messages
+# read the answers if it sees "OP_UPLOAD_DONE" or "OP_DOWNLOAD_DONE"
 def engine_call(messages):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.connect(ENGINE_SOCK)
@@ -48,8 +50,8 @@ def engine_call(messages):
     finally:
         s.close()
 
-# BaseHTTPRequestHandler درخواست های HTTP رو هندل میکنه
-# server_version فقط برای هدر های HTTP
+# handle HTTP requests
+# server_version is just for HTTP headers
 class Handler(BaseHTTPRequestHandler):
     server_version = "OS-Gateway/0.1"
     
@@ -71,8 +73,8 @@ class Handler(BaseHTTPRequestHandler):
         except:
             self.send_error(400, "Invalid Content-Length")
             return
-        #اینجا main.py فقط فایل را چانک‌چانک می‌خواند، هیچ hashing / ذخیره‌سازی انجام نمی‌دهد
 
+        # here it only read the files chunks and do not hash or save
         msgs = [frame(OP_UPLOAD_START, fname.encode("utf-8"))]
 
         remaining = total
@@ -87,9 +89,9 @@ class Handler(BaseHTTPRequestHandler):
             remaining -= n
 
         msgs.append(frame(OP_UPLOAD_FINISH, b""))
-        
-        # همه پیام رو میفرسته به موتور :START + CHUNK* + FINISH
-        #  بعد اگه OP_UPLOAD_DONE شده باشه خروجی ای که میگیریم cid 
+
+        # START + CHUNK + FINISH : sends all messages to c_engine
+        # if "OP_UPLOAD_DONE" the output = cid
         cid = None
         for op, payload in engine_call(msgs):
             if op == OP_UPLOAD_DONE:
@@ -130,7 +132,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.flush()
             # OP_DOWNLOAD_DONE ends the stream
 
-def run(host="127.0.0.1", port=9000):
+def run(host='127.0.0.1', port=9000):
     srv = ThreadingHTTPServer((host, port), Handler)
     print(f"HTTP gateway listening on http://{host}:{port}")
     try:

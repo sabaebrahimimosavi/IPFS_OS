@@ -1,34 +1,15 @@
-# === Binaries ===
-c_engine
-*.o
-*.exe
+# Ignore everything
+*
 
-# === Python ===
-__pycache__/
-*.pyc
-venv/
+# --- Allow only specific source files ---
+!c_engine.c
+!main.py
+!common.h
+!common.c
+!download.h
+!download.c
+!upload.h
+!upload.c
 
-# === Runtime data folders ===
-blocks/
-manifests/
-tmp/
-
-# Keep the folders but ignore contents
-blocks/*
-manifests/*
-tmp/*
-!blocks/.gitkeep
-!manifests/.gitkeep
-!tmp/.gitkeep
-
-# === Test files ===
-test
-test.bin
-test.txt
-out.bin
-out.txt
-
-# === OS junk ===
-.DS_Store
-Thumbs.db
-*.swp
+# Allow folders but ignore their contents (unless explicitly whitelisted)
+!*/
