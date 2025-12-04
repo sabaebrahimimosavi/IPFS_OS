@@ -1,7 +1,16 @@
-# Ignore everything
+# =========================
+# Ignore everything by default
+# =========================
 *
 
-# --- Allow only specific source files ---
+# =========================
+# Re-include folders so whitelisted files can be tracked
+# =========================
+!*/
+
+# =========================
+# Track only source files
+# =========================
 !c_engine.c
 !main.py
 !common.h
@@ -10,6 +19,32 @@
 !download.c
 !upload.h
 !upload.c
+!blake3.c
+!blake3.h
+!blake3_dispatch.c
+!blake3_portable.c
+!blake3_impl.h
+!CMakeLists.txt
 
-# Allow folders but ignore their contents (unless explicitly whitelisted)
-!*/
+# =========================
+# Ignore typical CMake build artifacts
+# =========================
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+build/
+*.cmake.user
+
+# =========================
+# Ignore Python temporary files
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+
+# =========================
+# Ignore OS-specific files
+# =========================
+.DS_Store
+Thumbs.db

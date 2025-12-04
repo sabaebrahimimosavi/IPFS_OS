@@ -4,6 +4,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include "blake3.h"
 
 void ensure_dir(const char *path) {
     if (mkdir(path, 0777) < 0 && errno != EEXIST) {
@@ -39,19 +40,25 @@ uint8_t *read_file_into_buf(const char* path , size_t *output_size){
     return buf;
 }
 
-void chunk_hash_hex(const uint8_t *data, size_t len, char out_hex[HASH_HEX_LEN + 1]) {
-    uint64_t h = 1469598103934665603ULL;
 
-    for (size_t i = 0; i < len; i++) {
-        h ^= (uint64_t)data[i];
-        h *= 1099511628211ULL;
+
+void chunk_hash_hex(const uint8_t *data, size_t len,char out_hex[HASH_HEX_LEN + 1]) {
+
+    // BLAKE3 output is 32 bytes
+    uint8_t digest[32];
+    blake3_hasher hasher;
+
+    blake3_hasher_init(&hasher);
+    blake3_hasher_update(&hasher, data, len);
+    blake3_hasher_finalize(&hasher, digest, sizeof(digest));
+
+    static const char hexdigit[] = "0123456789abcdef";
+
+    for (int i = 0; i < 32; i++) {
+        out_hex[i*2]     = hexdigit[digest[i] >> 4];
+        out_hex[i*2 + 1] = hexdigit[digest[i] & 0x0F];
     }
 
-    static const char *hex = "0123456789abcdef";
-    for (int i = 0; i < HASH_HEX_LEN/2; i++) {
-        uint8_t b = (uint8_t)(h >> (8 * i));
-        out_hex[i * 2]     = hex[(b >> 4) & 0xF];
-        out_hex[i * 2 + 1] = hex[b & 0xF];
-    }
-    out_hex[HASH_HEX_LEN] = '\0';
+    out_hex[64] = '\0';
 }
+

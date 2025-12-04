@@ -4,7 +4,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define HASH_HEX_LEN 16
+// BLAKE3 = 32 bytes = 64 hex chars
+#define HASH_HEX_LEN 64
 
 void ensure_dir(const char *path);
 int file_exists(const char *path);
