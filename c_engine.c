@@ -27,8 +27,10 @@
 #define OP_DOWNLOAD_DONE  0x92
 
 #define OP_ERROR 0xFF
-
 static const char* g_sock_path = NULL;
+
+thread_pool_t g_pool;
+#define NUM_WORKER_THREADS 8 
 
 //low-level I/O helpers (kept in main file as in your base)
 ssize_t read_n(int fd, void* buf, size_t n) {
@@ -158,6 +160,8 @@ int main(int argc, char** argv) {
     if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { perror("bind"); return 2; }
     if (listen(fd, 64) < 0) { perror("listen"); return 2; }
 
+    thread_pool_init(&g_pool, NUM_WORKER_THREADS);
+
     printf("[ENGINE] listening on %s\n", g_sock_path);
     fflush(stdout);
 
@@ -173,6 +177,8 @@ int main(int argc, char** argv) {
         }
         pthread_detach(th);
     }
+
+    thread_pool_destroy(&g_pool);
 
     close(fd);
     unlink(g_sock_path);

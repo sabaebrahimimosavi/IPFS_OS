@@ -25,6 +25,8 @@
 !blake3_portable.c
 !blake3_impl.h
 !CMakeLists.txt
+!miniipfs
+
 
 # =========================
 # Ignore typical CMake build artifacts
