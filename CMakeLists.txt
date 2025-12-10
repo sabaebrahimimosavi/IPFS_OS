@@ -22,7 +22,7 @@ set(SOURCES
         c_engine.c
         upload.c
         download.c
-        common. c
+        common.c
         blake3.c
         blake3_dispatch.c
         blake3_portable.c
