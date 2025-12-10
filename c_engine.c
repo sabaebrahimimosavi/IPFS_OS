@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,7 +31,30 @@
 static const char* g_sock_path = NULL;
 
 thread_pool_t g_pool;
-#define NUM_WORKER_THREADS 8 
+
+// Function to detect number of CPU cores available
+static int get_num_cpu_cores(void) {
+    long num_cores = sysconf(_SC_NPROCESSORS_ONLN);
+
+    if (num_cores <= 0) {
+        // Fallback if sysconf fails
+        printf("[WARNING] Could not detect CPU cores, using default of 4\n");
+        return 4;
+    }
+
+    // Good practices: don't create more threads than 2x cores
+    // (keeps threads manageable and prevents resource exhaustion)
+    int max_threads = (int)num_cores * 2;
+
+    // But at least 2 threads, at most 64 threads
+    if (max_threads < 2) max_threads = 2;
+    if (max_threads > 64) max_threads = 64;
+
+    printf("[ENGINE] Detected %ld CPU cores, creating %d worker threads\n", num_cores, max_threads);
+
+    return max_threads;
+}
+
 
 //low-level I/O helpers (kept in main file as in your base)
 ssize_t read_n(int fd, void* buf, size_t n) {
@@ -160,7 +184,9 @@ int main(int argc, char** argv) {
     if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { perror("bind"); return 2; }
     if (listen(fd, 64) < 0) { perror("listen"); return 2; }
 
-    thread_pool_init(&g_pool, NUM_WORKER_THREADS);
+    // detect CPU cores and create appropriate threads
+    int num_threads = get_num_cpu_cores();
+    thread_pool_init(&g_pool, num_threads);
 
     printf("[ENGINE] listening on %s\n", g_sock_path);
     fflush(stdout);

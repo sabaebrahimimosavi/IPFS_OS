@@ -4,6 +4,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <time.h>
 #include "blake3.h"
 
 void ensure_dir(const char *path) {
@@ -87,22 +88,33 @@ static void* worker_loop(void* arg) {
 
     for (;;) {
         pthread_mutex_lock(&pool->queue.lock);
-    
-        //eather a job or shutdown
-        while (pool->queue.head == NULL && !pool->shutdown)
-            pthread_cond_wait(&pool->queue.notify, &pool->queue.lock);
-        
+
+        // Set timeout of 5 seconds
+        struct timespec timeout;
+        clock_gettime(CLOCK_REALTIME, &timeout);
+        timeout.tv_sec += 5;  // 5 second timeout
+
+        // Either a job or timeout
+        while (pool->queue. head == NULL && !pool->shutdown) {
+            int ret = pthread_cond_timedwait(&pool->queue.notify, &pool->queue.lock, &timeout);
+            if (ret == ETIMEDOUT) {
+                // Timeout occurred - check if we should exit
+                if (pool->queue.head == NULL) {
+                    pthread_mutex_unlock(&pool->queue.lock);
+                    return NULL;  // Exit worker thread on timeout
+                }
+            }
+        }
 
         if (pool->shutdown) {
             pthread_mutex_unlock(&pool->queue.lock);
-            break; 
+            break;
         }
 
         task = pool->queue.head;
         pool->queue.head = task->next;
         if (pool->queue.head == NULL)
             pool->queue.tail = NULL;
-        
 
         pthread_mutex_unlock(&pool->queue.lock);
 

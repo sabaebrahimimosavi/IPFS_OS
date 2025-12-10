@@ -165,11 +165,21 @@ void* download_sender_loop(void* arg) {
             break;
         }
 
-        pthread_mutex_unlock(&agg->lock); 
-        
-        if (send_frame(cfd, OP_DOWNLOAD_CHUNK, rc->data, rc->size) < 0) {
+        // Create a copy of the chunk data while holding the lock
+        uint8_t *chunk_data = malloc(rc->size);
+        if (!chunk_data) {
             ok = 0;
+            pthread_mutex_unlock(&agg->lock);
+            break;
         }
+        memcpy(chunk_data, rc->data, rc->size);
+        uint32_t chunk_size = rc->size;
+
+        // safe to clean up under lock
+        free(rc->data);
+        remove_ready_chunk(agg, agg->next_index_to_send);
+        printf("[DL-SENDER-%lu] CLEANED Chunk Index: %u\n", (unsigned long)current_thread, agg->next_index_to_send);
+        agg->next_index_to_send++;
 
         pthread_mutex_lock(&agg->lock);
         free(rc->data);

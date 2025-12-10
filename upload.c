@@ -141,12 +141,16 @@ void handle_upload_chunk(int cfd,upload_S *sess,const uint8_t *payload,uint32_t 
     upload_task_arg_t *task_arg = malloc(sizeof(upload_task_arg_t));
     if (!task_arg) {
         send_error(cfd, "E_MEM", "Out of memory for task arg");
+        if (sess->chunks) free(sess->chunks);
+        sess->chunks = NULL;
         return;
     }
     task_arg->data = malloc(len);
     if (!task_arg->data) {
         free(task_arg);
         send_error(cfd, "E_MEM", "Out of memory for chunk data");
+        if (sess->chunks) free(sess->chunks);
+        sess->chunks = NULL;
         return;
     }
     memcpy(task_arg->data, payload, len);
