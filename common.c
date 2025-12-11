@@ -9,6 +9,8 @@
 
 // Global RW lock for manifest operations
 pthread_rwlock_t g_manifest_rwlock = PTHREAD_RWLOCK_INITIALIZER;
+// Global mutex for .ref (block reference count) updates
+pthread_mutex_t g_refcount_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void ensure_dir(const char *path) {
     if (mkdir(path, 0777) < 0 && errno != EEXIST) {
@@ -24,6 +26,9 @@ bool file_exists(const char *path){
 int block_ref_increment(const char *refpath) {
     unsigned long long val = 0;
 
+    // Serialize access to the .ref file to avoid lost updates under concurrency.
+    pthread_mutex_lock(&g_refcount_mutex);
+
     FILE *f = fopen(refpath, "r");
     if (f) {
         if (fscanf(f, "%llu", &val) != 1) {
@@ -36,10 +41,12 @@ int block_ref_increment(const char *refpath) {
     f = fopen(refpath, "w");
     if (!f) {
         perror("block_ref_increment: fopen");
+        pthread_mutex_unlock(&g_refcount_mutex);
         return -1;
     }
     fprintf(f, "%llu\n", val);
     fclose(f);
+    pthread_mutex_unlock(&g_refcount_mutex);
     return 0;
 }
 

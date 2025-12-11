@@ -72,6 +72,9 @@ extern pthread_rwlock_t g_manifest_rwlock;
 void init_manifest_lock(void);
 void destroy_manifest_lock(void);
 
+// Global mutex for .ref (block reference count) updates
+extern pthread_mutex_t g_refcount_mutex;
+
 // Thread Pool
 void thread_pool_init(thread_pool_t* pool, int num_threads);
 void thread_pool_add_task(thread_pool_t* pool, void (*func)(void*), void* arg);
