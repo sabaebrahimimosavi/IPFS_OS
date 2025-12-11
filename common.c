@@ -24,7 +24,7 @@ int block_ref_increment(const char *refpath) {
     FILE *f = fopen(refpath, "r");
     if (f) {
         if (fscanf(f, "%llu", &val) != 1) {
-            val = 0; 
+            val = 0;
         }
         fclose(f);
     }
@@ -90,20 +90,23 @@ static void* worker_loop(void* arg) {
         pthread_mutex_lock(&pool->queue.lock);
 
         // Set timeout of 5 seconds
-        struct timespec timeout;
-        clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_sec += 5;  // 5 second timeout
-
-        // Either a job or timeout
-        while (pool->queue. head == NULL && !pool->shutdown) {
-            int ret = pthread_cond_timedwait(&pool->queue.notify, &pool->queue.lock, &timeout);
-            if (ret == ETIMEDOUT) {
-                // Timeout occurred - check if we should exit
-                if (pool->queue.head == NULL) {
-                    pthread_mutex_unlock(&pool->queue.lock);
-                    return NULL;  // Exit worker thread on timeout
-                }
-            }
+//        struct timespec timeout;
+//        clock_gettime(CLOCK_REALTIME, &timeout);
+//        timeout.tv_sec += 5;  // 5 second timeout
+//
+//        // Either a job or timeout
+//        while (pool->queue. head == NULL && !pool->shutdown) {
+//            int ret = pthread_cond_timedwait(&pool->queue.notify, &pool->queue.lock, &timeout);
+//            if (ret == ETIMEDOUT) {
+//                // Timeout occurred - check if we should exit
+//                if (pool->queue.head == NULL) {
+//                    pthread_mutex_unlock(&pool->queue.lock);
+//                    return NULL;  // Exit worker thread on timeout
+//                }
+//            }
+//        }
+        while (pool->queue.head == NULL && !pool->shutdown) {
+            pthread_cond_wait(&pool->queue.notify, &pool->queue.lock);
         }
 
         if (pool->shutdown) {
@@ -151,7 +154,7 @@ void thread_pool_add_task(thread_pool_t* pool, void (*func)(void*), void* arg) {
     if (pool->queue.tail == NULL) {
         pool->queue.head = new_task;
         pool->queue.tail = new_task;
-    } 
+    }
     else {
         pool->queue.tail->next = new_task;
         pool->queue.tail = new_task;

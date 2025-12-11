@@ -18,18 +18,18 @@ void process_upload_chunk_task(void* arg) {
     upload_S *sess = task_arg->session;
     pthread_t current_thread = pthread_self();
     int ok = 0;
-    
-    printf("[UP-WORKER-%lu] Starting work on Chunk Index: %u\n", 
+
+    printf("[UP-WORKER-%lu] Starting work on Chunk Index: %u\n",
            (unsigned long)current_thread, task_arg->chunk_index);
 
     char hash_hex[HASH_HEX_LEN + 1];
     chunk_hash_hex(task_arg->data, task_arg->chunk_len, hash_hex);
     memcpy(task_arg->hash_hex, hash_hex, HASH_HEX_LEN + 1);
-    
+
     char dir1[64], dir2[128], filepath[256];
-    
+
     ensure_dir("blocks");
-    
+
     snprintf(dir1,sizeof(dir1),"blocks/%c%c",task_arg->hash_hex[0],task_arg->hash_hex[1]);
     ensure_dir(dir1);
 
@@ -42,68 +42,68 @@ void process_upload_chunk_task(void* arg) {
     snprintf(refpath, sizeof(refpath), "%s/%s.ref", dir2, task_arg->hash_hex);
 
     if (file_exists(filepath)) {
-    if (block_ref_increment(refpath) == 0)
-        ok = 1;
-    else
-        ok = 0;
+        if (block_ref_increment(refpath) == 0)
+            ok = 1;
+        else
+            ok = 0;
     }
     else{
         FILE *fp=fopen(filepath,"wb");
         if(fp){
             if(fwrite(task_arg->data, 1, task_arg->chunk_len, fp) == task_arg->chunk_len)
                 ok = 1;
-            
+
             fclose(fp);
         }
 
         if (ok) {
-            if (block_ref_increment(refpath) != 0) 
+            if (block_ref_increment(refpath) != 0)
                 perror("block_ref_increment (new block)");
         }
     }
-    
+
     pthread_mutex_lock(&sess->lock);
-    
+
     if (ok) {
         if(sess->chunk_count == sess->chunk_cap){
             if(sess->chunk_cap > 0 ) sess->chunk_cap = (sess->chunk_cap * 2);
             else sess->chunk_cap = 16;
-            
+
             chunk *new_chunks = realloc(sess->chunks, sizeof(chunk) * sess->chunk_cap);
             if(new_chunks) sess->chunks = new_chunks;
-            //reallocation failed
-            else ok = 0; 
+                //reallocation failed
+            else ok = 0;
         }
-        
+
         if (ok) {
             uint32_t idx = sess->chunk_count++;
-            
+
             sess->chunks[idx].index = task_arg->chunk_index;
             sess->chunks[idx].size  = task_arg->chunk_len;
             memcpy(sess->chunks[idx].hash, task_arg->hash_hex, HASH_HEX_LEN + 1);
 
             sess->total_size += task_arg->chunk_len;
 
-            printf("[UP-WORKER-%lu] Finished storing Chunk Index: %u\n", 
-                    (unsigned long)current_thread, task_arg->chunk_index);
+            printf("[UP-WORKER-%lu] Finished storing Chunk Index: %u\n",
+                   (unsigned long)current_thread, task_arg->chunk_index);
         }
     }
     else
-        printf("[UP-WORKER-%lu] ERROR storing Chunk Index: %u\n", 
+        printf("[UP-WORKER-%lu] ERROR storing Chunk Index: %u\n",
                (unsigned long)current_thread, task_arg->chunk_index);
-    
+
     sess->tasks_in_progress--;
-    
-    printf("[UP-WORKER-%lu] Tasks Left: %u\n", 
+
+    printf("[UP-WORKER-%lu] Tasks Left: %u\n",
            (unsigned long)current_thread, sess->tasks_in_progress);
 
     if (sess->tasks_in_progress == 0) {
         pthread_cond_signal(&sess->finished_cond); // going to handle_upload_finish
     }
-    
+
     pthread_mutex_unlock(&sess->lock);
 
-    free(task_arg->data); 
+    free(task_arg->data);
     free(task_arg);
 }
 
@@ -120,11 +120,11 @@ void handle_upload_start(int cfd, upload_S *sess, const uint8_t *payload, uint32
 
     sess->chunk_size = 256*1024;
     strncpy(sess->hash_algo, "blake3", sizeof(sess->hash_algo) - 1);
-    
+
     snprintf(sess->temp_manifest_path,sizeof(sess->temp_manifest_path),"manifests/%s.tmp",sess->filename);
 
     pthread_mutex_init(&sess->lock, NULL);
-    pthread_cond_init(&sess->finished_cond, NULL); 
+    pthread_cond_init(&sess->finished_cond, NULL);
     sess->tasks_in_progress = 0;
     sess->next_index = 0;
 
@@ -159,7 +159,7 @@ void handle_upload_chunk(int cfd,upload_S *sess,const uint8_t *payload,uint32_t 
 
     pthread_mutex_lock(&sess->lock);
     sess->tasks_in_progress++;
-    task_arg->chunk_index = sess->next_index++;  
+    task_arg->chunk_index = sess->next_index++;
     pthread_mutex_unlock(&sess->lock);
 
     thread_pool_add_task(&g_pool, process_upload_chunk_task, task_arg);
@@ -167,12 +167,12 @@ void handle_upload_chunk(int cfd,upload_S *sess,const uint8_t *payload,uint32_t 
 
 void handle_upload_finish(int cfd,upload_S *sess){
     pthread_mutex_lock(&sess->lock);
-    
+
     printf("[UP-FINISH] Waiting for %u tasks to complete...\n", sess->tasks_in_progress);
-    
+
     //wait while there is unfinished task
     while (sess->tasks_in_progress > 0)
-        pthread_cond_wait(&sess->finished_cond, &sess->lock); 
+        pthread_cond_wait(&sess->finished_cond, &sess->lock);
 
     pthread_mutex_unlock(&sess->lock);
 

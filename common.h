@@ -12,7 +12,7 @@
 // task
 typedef struct task {
     void (*func)(void*); //function
-    void* arg;    
+    void* arg;
     struct task* next; // pointer to next task
 } task_t;
 

@@ -24,7 +24,7 @@ typedef struct {
     char cid[HASH_HEX_LEN + 1];
 
     uint32_t next_index;
-    
+
     pthread_mutex_t lock;
     uint32_t tasks_in_progress;
     pthread_cond_t finished_cond;
@@ -35,11 +35,11 @@ typedef struct {
 typedef struct {
     uint32_t chunk_index;
     uint32_t chunk_len;
-    uint8_t *data; 
+    uint8_t *data;
 
-    char hash_hex[HASH_HEX_LEN + 1];  
+    char hash_hex[HASH_HEX_LEN + 1];
 
-    upload_S *session;                    
+    upload_S *session;
 } upload_task_arg_t;
 
 void handle_upload_start(int cfd, upload_S *sess, const uint8_t *payload, uint32_t len);

@@ -54,9 +54,9 @@ def engine_call(messages):
 # server_version is just for HTTP headers
 class Handler(BaseHTTPRequestHandler):
     server_version = "OS-Gateway/0.1"
-    
+
     # upload
-    def do_POST(self): 
+    def do_POST(self):
         parsed = urlparse(self.path)
         if parsed.path != "/upload":
             self.send_error(404, "Not Found")
@@ -96,18 +96,18 @@ class Handler(BaseHTTPRequestHandler):
         for op, payload in engine_call(msgs):
             if op == OP_UPLOAD_DONE:
                 cid = payload.decode("utf-8")
-        
+
         if cid is None:
             self.send_error(502, "Engine did not return CID")
             return
-        
+
         body = json.dumps({"cid": cid}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
-        
+
     # download
     def do_GET(self):
         parsed = urlparse(self.path)
