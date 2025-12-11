@@ -3,6 +3,7 @@ from urllib.parse import urlparse, parse_qs
 import socket
 import struct
 import json
+import os  # for getenv
 
 ENGINE_SOCK = "/tmp/cengine.sock"
 
@@ -16,6 +17,30 @@ OP_UPLOAD_DONE  = 0x81
 OP_DOWNLOAD_START = 0x11
 OP_DOWNLOAD_CHUNK = 0x91
 OP_DOWNLOAD_DONE  = 0x92
+
+# env-based chunk size
+DEFAULT_CHUNK_SIZE = 256 * 1024  # 256 KB
+
+def get_chunk_size_from_env():
+    """Read CHUNK_SIZE from environment (bytes), fallback to DEFAULT_CHUNK_SIZE."""
+    val = os.getenv("CHUNK_SIZE")
+    if not val:
+        return DEFAULT_CHUNK_SIZE
+    try:
+        n = int(val)
+        if n <= 0:
+            raise ValueError("CHUNK_SIZE must be > 0")
+        # Optional: clamp to a reasonable maximum, e.g. 16 MB
+        if n > 16 * 1024 * 1024:
+            n = 16 * 1024 * 1024
+        return n
+    except ValueError:
+        print(f"[GATEWAY] WARNING: invalid CHUNK_SIZE='{val}', using default {DEFAULT_CHUNK_SIZE}")
+        return DEFAULT_CHUNK_SIZE
+
+CHUNK = get_chunk_size_from_env()
+print(f"[GATEWAY] Using CHUNK_SIZE={CHUNK} bytes")
+# ----------------------------------
 
 # [ opcode (1 byte) | payload_length (4 byte)| payload ]
 # payload : input data , it is different based on what it supposes to do (page 7)
@@ -78,7 +103,8 @@ class Handler(BaseHTTPRequestHandler):
         msgs = [frame(OP_UPLOAD_START, fname.encode("utf-8"))]
 
         remaining = total
-        CHUNK = 256 * 1024
+        # CHANGED: use global CHUNK instead of hardcoded 256 * 1024
+        global CHUNK
         while remaining > 0:
             n = min(remaining, CHUNK)
             data = self.rfile.read(n)

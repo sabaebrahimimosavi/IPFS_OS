@@ -120,17 +120,41 @@ void handle_upload_start(int cfd, upload_S *sess, const uint8_t *payload, uint32
     memcpy(sess->filename, payload,fn_len);
     sess->filename[fn_len] = '\0';
 
-    sess->chunk_size = 256*1024;
-    strncpy(sess->hash_algo, "blake3", sizeof(sess->hash_algo) - 1);
+    // Default chunk size must match the Python gateway's default
+    uint32_t chunk_size = 256 * 1024;
 
-    snprintf(sess->temp_manifest_path,sizeof(sess->temp_manifest_path),"manifests/%s.tmp",sess->filename);
+    // Read CHUNK_SIZE from environment (bytes), if present
+    const char *env_chunk = getenv("CHUNK_SIZE");
+    if (env_chunk && env_chunk[0] != '\0') {
+        char *endptr = NULL;
+        long val = strtol(env_chunk, &endptr, 10);
+        if (endptr != env_chunk && *endptr == '\0' && val > 0) {
+            // Optional: clamp to a reasonable range, e.g. [1 KB, 16 MB]
+            if (val < 1024) val = 1024;
+            if (val > 16 * 1024 * 1024) val = 16 * 1024 * 1024;
+            chunk_size = (uint32_t)val;
+        } else {
+            printf("[ENGINE] WARNING: invalid CHUNK_SIZE='%s', using default %u\n",
+                   env_chunk, chunk_size);
+        }
+    }
+
+    sess->chunk_size = chunk_size;
+
+    // Hash algorithm (we still only support blake3)
+    strncpy(sess->hash_algo, "blake3", sizeof(sess->hash_algo) - 1);
+    sess->hash_algo[sizeof(sess->hash_algo) - 1] = '\0';
+
+    snprintf(sess->temp_manifest_path,sizeof(sess->temp_manifest_path),
+             "manifests/%s.tmp",sess->filename);
 
     pthread_mutex_init(&sess->lock, NULL);
     pthread_cond_init(&sess->finished_cond, NULL);
     sess->tasks_in_progress = 0;
     sess->next_index = 0;
 
-    printf("[ENGINE] UPLOAD_START: %s\n",sess->filename);
+    printf("[ENGINE] UPLOAD_START: %s (CHUNK_SIZE=%u)\n",
+           sess->filename, sess->chunk_size);
 }
 
 void handle_upload_chunk(int cfd,upload_S *sess,const uint8_t *payload,uint32_t len){
