@@ -82,6 +82,95 @@ void chunk_hash_hex(const uint8_t *data, size_t len,char out_hex[HASH_HEX_LEN + 
     out_hex[64] = '\0';
 }
 
+// New: raw BLAKE3-256 hash (32 bytes, no hex)
+void blake3_raw_hash(const uint8_t *data, size_t len, uint8_t out[MH_BLAKE3_256_SIZE]) {
+    blake3_hasher hasher;
+    blake3_hasher_init(&hasher);
+    blake3_hasher_update(&hasher, data, len);
+    blake3_hasher_finalize(&hasher, out, MH_BLAKE3_256_SIZE);
+}
+
+// New: multihash(blake3-256, data) => [code, length, digest...]
+size_t make_multihash_blake3_256(const uint8_t *data, size_t len,
+                                 uint8_t *out, size_t out_cap) {
+    // We need at least 1 byte code + 1 byte length + 32 bytes digest
+    if (out_cap < 2 + MH_BLAKE3_256_SIZE) {
+        return 0;
+    }
+
+    uint8_t digest[MH_BLAKE3_256_SIZE];
+    blake3_raw_hash(data, len, digest);
+
+    size_t pos = 0;
+    out[pos++] = MH_BLAKE3_256;         // hash function code
+    out[pos++] = MH_BLAKE3_256_SIZE;    // digest length
+    memcpy(&out[pos], digest, MH_BLAKE3_256_SIZE);
+    pos += MH_BLAKE3_256_SIZE;
+
+    return pos;
+}
+
+// New: CID bytes for a manifest: [CID_CODEC_MANIFEST | multihash...]
+size_t make_cid_bytes_for_manifest(const uint8_t *manifest,
+                                   size_t manifest_len,
+                                   uint8_t *out, size_t out_cap) {
+    // We need at least 1 byte codec + multihash length
+    if (out_cap < 1 + 2 + MH_BLAKE3_256_SIZE) {
+        return 0;
+    }
+
+    size_t pos = 0;
+    out[pos++] = CID_CODEC_MANIFEST;
+
+    size_t mh_len = make_multihash_blake3_256(manifest, manifest_len,
+                                              &out[pos], out_cap - pos);
+    if (mh_len == 0) {
+        return 0;
+    }
+    pos += mh_len;
+
+    return pos;
+}
+
+// New: Base32 encoder (RFC 4648, no padding)
+static const char BASE32_ALPHABET[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+size_t base32_encode(const uint8_t *data, size_t len,
+                     char *out, size_t out_cap) {
+    uint32_t buffer = 0;
+    int bits_in_buffer = 0;
+    size_t out_len = 0;
+
+    for (size_t i = 0; i < len; i++) {
+        buffer = (buffer << 8) | data[i];
+        bits_in_buffer += 8;
+
+        while (bits_in_buffer >= 5) {
+            bits_in_buffer -= 5;
+            uint8_t index = (buffer >> bits_in_buffer) & 0x1F;
+            if (out_len >= out_cap) {
+                return 0; // output buffer too small
+            }
+            out[out_len++] = BASE32_ALPHABET[index];
+        }
+    }
+
+    if (bits_in_buffer > 0) {
+        buffer <<= (5 - bits_in_buffer);
+        uint8_t index = buffer & 0x1F;
+        if (out_len >= out_cap) {
+            return 0;
+        }
+        out[out_len++] = BASE32_ALPHABET[index];
+    }
+
+    if (out_len >= out_cap) {
+        return 0;
+    }
+    out[out_len] = '\0';
+    return out_len;
+}
+
 static void* worker_loop(void* arg) {
     thread_pool_t* pool = (thread_pool_t*)arg;
     task_t* task = NULL;
@@ -89,22 +178,6 @@ static void* worker_loop(void* arg) {
     for (;;) {
         pthread_mutex_lock(&pool->queue.lock);
 
-        // Set timeout of 5 seconds
-//        struct timespec timeout;
-//        clock_gettime(CLOCK_REALTIME, &timeout);
-//        timeout.tv_sec += 5;  // 5 second timeout
-//
-//        // Either a job or timeout
-//        while (pool->queue. head == NULL && !pool->shutdown) {
-//            int ret = pthread_cond_timedwait(&pool->queue.notify, &pool->queue.lock, &timeout);
-//            if (ret == ETIMEDOUT) {
-//                // Timeout occurred - check if we should exit
-//                if (pool->queue.head == NULL) {
-//                    pthread_mutex_unlock(&pool->queue.lock);
-//                    return NULL;  // Exit worker thread on timeout
-//                }
-//            }
-//        }
         while (pool->queue.head == NULL && !pool->shutdown) {
             pthread_cond_wait(&pool->queue.notify, &pool->queue.lock);
         }
@@ -180,4 +253,3 @@ void thread_pool_destroy(thread_pool_t* pool) {
     pthread_cond_destroy(&pool->queue.notify);
 
 }
-

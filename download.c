@@ -297,7 +297,7 @@ static void* download_sender_loop(void* arg) {
         printf("[DL-SENDER-%lu] All chunks sent, sending OP_DOWNLOAD_DONE\n",
                (unsigned long)current_thread);
         send_frame(cfd, OP_DOWNLOAD_DONE, NULL, 0);
-        printf("[ENGINE] UPLOAD_DONE\n");
+        printf("[ENGINE] DOWNLOAD_DONE\n");
         printf("[DL-SENDER-%lu] Download completed successfully\n",
                (unsigned long)current_thread);
     } else {
@@ -307,7 +307,7 @@ static void* download_sender_loop(void* arg) {
                    "Download failed due to block error or I/O failure");
     }
 
-    // cleanup as before...
+    // Cleanup
     pthread_mutex_destroy(&agg->lock);
     pthread_cond_destroy(&agg->ready_cond);
 
@@ -332,7 +332,8 @@ static void* download_sender_loop(void* arg) {
 void handle_download(int cfd, const uint8_t *payload, uint32_t len) {
     printf("[DL] handle_download: len=%u\n", len);
 
-    char cid_buf[HASH_HEX_LEN + 1];
+    // CID is now base32 (A-Z, 2-7), not hex.
+    char cid_buf[CID_MAX_LEN + 1];
     size_t cid_len = len;
     if (cid_len >= sizeof(cid_buf))
         cid_len = sizeof(cid_buf) - 1;
@@ -340,12 +341,11 @@ void handle_download(int cfd, const uint8_t *payload, uint32_t len) {
     cid_buf[cid_len] = '\0';
     printf("[DL] CID='%s'\n", cid_buf);
 
-    // validate hex
+    // Validate Base32 characters: A-Z and 2-7 only.
     for (size_t i = 0; i < cid_len; i++) {
         char c = cid_buf[i];
-        if (!((c >= '0' && c <= '9') ||
-              (c >= 'a' && c <= 'f') ||
-              (c >= 'A' && c <= 'F'))) {
+        if (!((c >= 'A' && c <= 'Z') ||
+              (c >= '2' && c <= '7'))) {
             printf("[DL] BAD CID char at %zu\n", i);
             send_error(cfd, "E_BAD_CID", "Invalid CID");
             return;

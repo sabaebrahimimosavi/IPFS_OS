@@ -12,7 +12,7 @@ extern thread_pool_t g_pool;
 extern int send_frame(int fd, uint8_t op, const void* payload, uint32_t len);
 extern void send_error(int fd, const char *code, const char *message);
 
-//worker theread function
+// Worker thread function
 void process_upload_chunk_task(void* arg) {
     upload_task_arg_t *task_arg = (upload_task_arg_t*)arg;
     upload_S *sess = task_arg->session;
@@ -71,8 +71,7 @@ void process_upload_chunk_task(void* arg) {
 
             chunk *new_chunks = realloc(sess->chunks, sizeof(chunk) * sess->chunk_cap);
             if(new_chunks) sess->chunks = new_chunks;
-                //reallocation failed
-            else ok = 0;
+            else ok = 0; // reallocation failed
         }
 
         if (ok) {
@@ -88,9 +87,10 @@ void process_upload_chunk_task(void* arg) {
                    (unsigned long)current_thread, task_arg->chunk_index);
         }
     }
-    else
+    else {
         printf("[UP-WORKER-%lu] ERROR storing Chunk Index: %u\n",
                (unsigned long)current_thread, task_arg->chunk_index);
+    }
 
     sess->tasks_in_progress--;
 
@@ -170,7 +170,7 @@ void handle_upload_finish(int cfd,upload_S *sess){
 
     printf("[UP-FINISH] Waiting for %u tasks to complete...\n", sess->tasks_in_progress);
 
-    //wait while there is unfinished task
+    // Wait while there is any unfinished task
     while (sess->tasks_in_progress > 0)
         pthread_cond_wait(&sess->finished_cond, &sess->lock);
 
@@ -179,32 +179,68 @@ void handle_upload_finish(int cfd,upload_S *sess){
     ensure_dir("manifests");
 
     FILE *mf = fopen(sess->temp_manifest_path,"w");
-    fprintf(mf, "{ \"version\":1,\"hash_algo\":\"%s\",\"chunk_size\":%u," "\"total_size\":%llu,\"filename\":\"%s\",\"chunks\":[",
-            sess->hash_algo,sess->chunk_size, (unsigned long long)sess->total_size,sess->filename);
+    if (!mf) {
+        perror("fopen manifest temp");
+        send_error(cfd, "E_IO", "Cannot open manifest temp file");
+        return;
+    }
+
+    fprintf(mf, "{ \"version\":1,\"hash_algo\":\"%s\",\"chunk_size\":%u,"
+                "\"total_size\":%llu,\"filename\":\"%s\",\"chunks\":[",
+            sess->hash_algo,sess->chunk_size,
+            (unsigned long long)sess->total_size,sess->filename);
 
     for(uint32_t i = 0; i < sess->chunk_count; i++){
         chunk *ci = &sess->chunks[i];
-        fprintf(mf,"%s{\"index\":%u,\"size\":%u,\"hash\":\"%s\"}", (i?",":""),ci->index,ci->size,ci->hash);
+        fprintf(mf,"%s{\"index\":%u,\"size\":%u,\"hash\":\"%s\"}",
+                (i?",":""),ci->index,ci->size,ci->hash);
     }
     fprintf(mf,"]}");
     fclose(mf);
 
-    size_t mf_size;
+    // Read manifest back into memory to compute CID
+    size_t mf_size = 0;
     uint8_t *buf = read_file_into_buf(sess->temp_manifest_path,&mf_size);
+    if (!buf) {
+        send_error(cfd, "E_IO", "Cannot read manifest temp");
+        return;
+    }
 
-    char cid_hex[HASH_HEX_LEN+1];
-    chunk_hash_hex(buf,mf_size,cid_hex);
+    // Build raw CID bytes = [CID_CODEC_MANIFEST | multihash(blake3-256, manifest)]
+    uint8_t cid_raw[64]; // enough for 1 + 2 + 32 = 35 bytes
+    size_t cid_raw_len = make_cid_bytes_for_manifest(buf, mf_size,
+                                                     cid_raw, sizeof(cid_raw));
     free(buf);
+    if (cid_raw_len == 0) {
+        send_error(cfd, "E_INTERNAL", "CID generation failed");
+        return;
+    }
 
-    memcpy(sess->cid,cid_hex,HASH_HEX_LEN+1);
+    // Base32 encode the CID bytes
+    char cid_str[CID_MAX_LEN + 1];
+    size_t cid_str_len = base32_encode(cid_raw, cid_raw_len,
+                                       cid_str, sizeof(cid_str));
+    if (cid_str_len == 0) {
+        send_error(cfd, "E_INTERNAL", "CID base32 encode failed");
+        return;
+    }
 
+    // Store CID in session
+    if (cid_str_len >= sizeof(sess->cid)) {
+        send_error(cfd, "E_INTERNAL", "CID too long for buffer");
+        return;
+    }
+    memcpy(sess->cid, cid_str, cid_str_len + 1);
+
+    // Final manifest path uses CID string
     char final_path[512];
-    snprintf(final_path,sizeof(final_path),"manifests/%s.json",cid_hex);
+    snprintf(final_path,sizeof(final_path),"manifests/%s.json",cid_str);
     rename(sess->temp_manifest_path,final_path);
 
-    send_frame(cfd,OP_UPLOAD_DONE,cid_hex,strlen(cid_hex));
+    // Send CID back to gateway
+    send_frame(cfd,OP_UPLOAD_DONE,cid_str,(uint32_t)cid_str_len);
 
-    printf("[ENGINE] UPLOAD_FINISH -> CID=%s\n",cid_hex);
+    printf("[ENGINE] UPLOAD_FINISH -> CID=%s\n",cid_str);
 
     pthread_mutex_destroy(&sess->lock);
     pthread_cond_destroy(&sess->finished_cond);

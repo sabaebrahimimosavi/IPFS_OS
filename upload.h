@@ -21,7 +21,8 @@ typedef struct {
     uint32_t chunk_count;
     uint32_t chunk_cap;
 
-    char cid[HASH_HEX_LEN + 1];
+    // CID is now base32(multicodec + multihash), so it can be longer than HASH_HEX_LEN.
+    char cid[CID_MAX_LEN + 1];
 
     uint32_t next_index;
 
@@ -31,7 +32,7 @@ typedef struct {
 
 } upload_S;
 
-//for each chanck in thread pool
+// For each chunk in thread pool
 typedef struct {
     uint32_t chunk_index;
     uint32_t chunk_len;
