@@ -49,21 +49,28 @@ int block_ref_increment(const char *refpath);
 uint8_t *read_file_into_buf(const char* path , size_t *output_size);
 void chunk_hash_hex(const uint8_t *data, size_t len, char out_hex[HASH_HEX_LEN + 1]);
 
-// New: raw BLAKE3 hash without hex encoding
+// Raw BLAKE3 hash without hex encoding
 void blake3_raw_hash(const uint8_t *data, size_t len, uint8_t out[MH_BLAKE3_256_SIZE]);
 
-// New: build multihash(blake3-256, data)
+// Build multihash(blake3-256, data)
 size_t make_multihash_blake3_256(const uint8_t *data, size_t len,
                                  uint8_t *out, size_t out_cap);
 
-// New: build raw CID bytes for a manifest: [CID_CODEC_MANIFEST | multihash...]
+// Build raw CID bytes for a manifest: [CID_CODEC_MANIFEST | multihash...]
 size_t make_cid_bytes_for_manifest(const uint8_t *manifest,
                                    size_t manifest_len,
                                    uint8_t *out, size_t out_cap);
 
-// New: base32 encoder (RFC 4648, no padding)
+// Base32 encoder (RFC 4648, no padding)
 size_t base32_encode(const uint8_t *data, size_t len,
                      char *out, size_t out_cap);
+
+// Global read/write lock for manifest operations
+extern pthread_rwlock_t g_manifest_rwlock;
+
+// Init/destroy helpers for manifest RW lock
+void init_manifest_lock(void);
+void destroy_manifest_lock(void);
 
 // Thread Pool
 void thread_pool_init(thread_pool_t* pool, int num_threads);

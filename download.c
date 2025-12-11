@@ -356,8 +356,12 @@ void handle_download(int cfd, const uint8_t *payload, uint32_t len) {
     snprintf(manifest_path, sizeof(manifest_path), "manifests/%s.json", cid_buf);
     printf("[DL] manifest_path=%s\n", manifest_path);
 
+    // Acquire read lock for manifest operations
+    pthread_rwlock_rdlock(&g_manifest_rwlock);
+
     if (!file_exists(manifest_path)) {
         printf("[DL] manifest not found\n");
+        pthread_rwlock_unlock(&g_manifest_rwlock);
         send_error(cfd, "E_NOT_FOUND", "Manifest not found");
         return;
     }
@@ -366,11 +370,15 @@ void handle_download(int cfd, const uint8_t *payload, uint32_t len) {
     uint8_t *mf_buf = read_file_into_buf(manifest_path, &mf_size);
     if (!mf_buf) {
         printf("[DL] read_file_into_buf failed\n");
+        pthread_rwlock_unlock(&g_manifest_rwlock);
         send_error(cfd, "E_IO", "Cannot read manifest");
         return;
     }
 
     printf("[DL] manifest read, size=%zu\n", mf_size);
+
+    // Done with disk access for this manifest; release read lock
+    pthread_rwlock_unlock(&g_manifest_rwlock);
 
     chunk *chunks = NULL;
     int n_chunks = parse_manifest_chunks(mf_buf, mf_size, &chunks);

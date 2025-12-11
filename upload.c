@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <unistd.h>   // for fsync
+#include <fcntl.h>
 
 #define OP_UPLOAD_DONE   0x81
 
@@ -176,11 +178,15 @@ void handle_upload_finish(int cfd,upload_S *sess){
 
     pthread_mutex_unlock(&sess->lock);
 
+    // Acquire write lock for manifest operations
+    pthread_rwlock_wrlock(&g_manifest_rwlock);
+
     ensure_dir("manifests");
 
     FILE *mf = fopen(sess->temp_manifest_path,"w");
     if (!mf) {
         perror("fopen manifest temp");
+        pthread_rwlock_unlock(&g_manifest_rwlock);
         send_error(cfd, "E_IO", "Cannot open manifest temp file");
         return;
     }
@@ -196,12 +202,40 @@ void handle_upload_finish(int cfd,upload_S *sess){
                 (i?",":""),ci->index,ci->size,ci->hash);
     }
     fprintf(mf,"]}");
+
+    // Flush stdio buffer
+    if (fflush(mf) != 0) {
+        perror("fflush manifest temp");
+        fclose(mf);
+        pthread_rwlock_unlock(&g_manifest_rwlock);
+        send_error(cfd, "E_IO", "Cannot flush manifest temp file");
+        return;
+    }
+
+    // Ensure data is on disk before rename
+    int fd = fileno(mf);
+    if (fd == -1) {
+        perror("fileno manifest temp");
+        fclose(mf);
+        pthread_rwlock_unlock(&g_manifest_rwlock);
+        send_error(cfd, "E_IO", "Cannot get fileno for manifest temp file");
+        return;
+    }
+    if (fsync(fd) != 0) {
+        perror("fsync manifest temp");
+        fclose(mf);
+        pthread_rwlock_unlock(&g_manifest_rwlock);
+        send_error(cfd, "E_IO", "Cannot fsync manifest temp file");
+        return;
+    }
+
     fclose(mf);
 
     // Read manifest back into memory to compute CID
     size_t mf_size = 0;
     uint8_t *buf = read_file_into_buf(sess->temp_manifest_path,&mf_size);
     if (!buf) {
+        pthread_rwlock_unlock(&g_manifest_rwlock);
         send_error(cfd, "E_IO", "Cannot read manifest temp");
         return;
     }
@@ -212,6 +246,7 @@ void handle_upload_finish(int cfd,upload_S *sess){
                                                      cid_raw, sizeof(cid_raw));
     free(buf);
     if (cid_raw_len == 0) {
+        pthread_rwlock_unlock(&g_manifest_rwlock);
         send_error(cfd, "E_INTERNAL", "CID generation failed");
         return;
     }
@@ -221,12 +256,14 @@ void handle_upload_finish(int cfd,upload_S *sess){
     size_t cid_str_len = base32_encode(cid_raw, cid_raw_len,
                                        cid_str, sizeof(cid_str));
     if (cid_str_len == 0) {
+        pthread_rwlock_unlock(&g_manifest_rwlock);
         send_error(cfd, "E_INTERNAL", "CID base32 encode failed");
         return;
     }
 
     // Store CID in session
     if (cid_str_len >= sizeof(sess->cid)) {
+        pthread_rwlock_unlock(&g_manifest_rwlock);
         send_error(cfd, "E_INTERNAL", "CID too long for buffer");
         return;
     }
@@ -236,6 +273,9 @@ void handle_upload_finish(int cfd,upload_S *sess){
     char final_path[512];
     snprintf(final_path,sizeof(final_path),"manifests/%s.json",cid_str);
     rename(sess->temp_manifest_path,final_path);
+
+    // Release write lock
+    pthread_rwlock_unlock(&g_manifest_rwlock);
 
     // Send CID back to gateway
     send_frame(cfd,OP_UPLOAD_DONE,cid_str,(uint32_t)cid_str_len);

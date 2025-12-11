@@ -7,6 +7,9 @@
 #include <time.h>
 #include "blake3.h"
 
+// Global RW lock for manifest operations
+pthread_rwlock_t g_manifest_rwlock = PTHREAD_RWLOCK_INITIALIZER;
+
 void ensure_dir(const char *path) {
     if (mkdir(path, 0777) < 0 && errno != EEXIST) {
         perror("mkdir");
@@ -82,7 +85,7 @@ void chunk_hash_hex(const uint8_t *data, size_t len,char out_hex[HASH_HEX_LEN + 
     out_hex[64] = '\0';
 }
 
-// New: raw BLAKE3-256 hash (32 bytes, no hex)
+// Raw BLAKE3-256 hash (32 bytes, no hex)
 void blake3_raw_hash(const uint8_t *data, size_t len, uint8_t out[MH_BLAKE3_256_SIZE]) {
     blake3_hasher hasher;
     blake3_hasher_init(&hasher);
@@ -90,7 +93,7 @@ void blake3_raw_hash(const uint8_t *data, size_t len, uint8_t out[MH_BLAKE3_256_
     blake3_hasher_finalize(&hasher, out, MH_BLAKE3_256_SIZE);
 }
 
-// New: multihash(blake3-256, data) => [code, length, digest...]
+// multihash(blake3-256, data) => [code, length, digest...]
 size_t make_multihash_blake3_256(const uint8_t *data, size_t len,
                                  uint8_t *out, size_t out_cap) {
     // We need at least 1 byte code + 1 byte length + 32 bytes digest
@@ -110,7 +113,7 @@ size_t make_multihash_blake3_256(const uint8_t *data, size_t len,
     return pos;
 }
 
-// New: CID bytes for a manifest: [CID_CODEC_MANIFEST | multihash...]
+// CID bytes for a manifest: [CID_CODEC_MANIFEST | multihash...]
 size_t make_cid_bytes_for_manifest(const uint8_t *manifest,
                                    size_t manifest_len,
                                    uint8_t *out, size_t out_cap) {
@@ -132,7 +135,7 @@ size_t make_cid_bytes_for_manifest(const uint8_t *manifest,
     return pos;
 }
 
-// New: Base32 encoder (RFC 4648, no padding)
+// Base32 encoder (RFC 4648, no padding)
 static const char BASE32_ALPHABET[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
 size_t base32_encode(const uint8_t *data, size_t len,
@@ -169,6 +172,15 @@ size_t base32_encode(const uint8_t *data, size_t len,
     }
     out[out_len] = '\0';
     return out_len;
+}
+
+// Manifest RW-lock helpers
+void init_manifest_lock(void) {
+    pthread_rwlock_init(&g_manifest_rwlock, NULL);
+}
+
+void destroy_manifest_lock(void) {
+    pthread_rwlock_destroy(&g_manifest_rwlock);
 }
 
 static void* worker_loop(void* arg) {
@@ -251,5 +263,4 @@ void thread_pool_destroy(thread_pool_t* pool) {
     free(pool->threads);
     pthread_mutex_destroy(&pool->queue.lock);
     pthread_cond_destroy(&pool->queue.notify);
-
 }

@@ -17,6 +17,7 @@
 
 #include "upload.h"
 #include "download.h"
+#include "common.h"
 
 #define OP_UPLOAD_START  0x01
 #define OP_UPLOAD_CHUNK  0x02
@@ -56,7 +57,7 @@ static int get_num_cpu_cores(void) {
 }
 
 
-//low-level I/O helpers (kept in main file as in your base)
+// low-level I/O helpers (kept in main file as in your base)
 ssize_t read_n(int fd, void* buf, size_t n) {
     size_t got = 0;
     while (got < n) {
@@ -103,14 +104,14 @@ void send_error(int fd, const char *code, const char *message) {
 
 void handle_connection(int cfd) {
     /*
-     * build a structure for the file that should be uploaded
-     * it contains :
-     * name
-     * whole size
-     * chunk size
-     * hash algo
-     * here we define : initialize value in "start" then use it later
-    */
+     * Build a structure for the file that should be uploaded
+     * it contains:
+     *  - name
+     *  - whole size
+     *  - chunk size
+     *  - hash algo
+     * Here we define & initialize values in "start" then use them later.
+     */
 
     upload_S sess;
     memset(&sess, 0, sizeof(sess));
@@ -136,16 +137,19 @@ void handle_connection(int cfd) {
             if (read_n(cfd, payload, (size_t)len) <= 0) { free(payload); break; }
         }
 
-        if(op==OP_UPLOAD_START)   handle_upload_start(cfd,&sess,payload,len);
-        else if(op==OP_UPLOAD_CHUNK) handle_upload_chunk(cfd,&sess,payload,len);
-        else if(op==OP_UPLOAD_FINISH) handle_upload_finish(cfd,&sess);
-        else if (op == OP_DOWNLOAD_START) {
-            printf("[ENGINE] DOWNLOAD_START: cid=\"%.*s\"\n", (int)len, (char*)payload ? (char*)payload : "");
+        if (op == OP_UPLOAD_START) {
+            handle_upload_start(cfd,&sess,payload,len);
+        } else if (op == OP_UPLOAD_CHUNK) {
+            handle_upload_chunk(cfd,&sess,payload,len);
+        } else if (op == OP_UPLOAD_FINISH) {
+            handle_upload_finish(cfd,&sess);
+        } else if (op == OP_DOWNLOAD_START) {
+            printf("[ENGINE] DOWNLOAD_START: cid=\"%.*s\"\n",
+                   (int)len, (char*)(payload ? (char*)payload : ""));
             fflush(stdout);
             // delegate download handling (stream chunks and DONE)
             handle_download(cfd, payload, len);
-        }
-        else {
+        } else {
             // unknown op: ignore or send error
             send_error(cfd, "E_PROTO", "Unknown opcode");
         }
@@ -188,12 +192,19 @@ int main(int argc, char** argv) {
     int num_threads = get_num_cpu_cores();
     thread_pool_init(&g_pool, num_threads);
 
+    // initialize manifest RW lock
+    init_manifest_lock();
+
     printf("[ENGINE] listening on %s\n", g_sock_path);
     fflush(stdout);
 
     for (;;) {
         int cfd = accept(fd, NULL, NULL);
-        if (cfd < 0) { if (errno == EINTR) continue; perror("accept"); break; }
+        if (cfd < 0) {
+            if (errno == EINTR) continue;
+            perror("accept");
+            break;
+        }
         // Thread-per-connection keeps it readable for OS labs
         pthread_t th;
         if (pthread_create(&th, NULL, connection_thread, (void*)(intptr_t)cfd) != 0) {
@@ -206,10 +217,10 @@ int main(int argc, char** argv) {
 
     thread_pool_destroy(&g_pool);
 
+    // destroy manifest RW lock
+    destroy_manifest_lock();
+
     close(fd);
     unlink(g_sock_path);
     return 0;
 }
-
-
-
