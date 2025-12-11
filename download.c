@@ -117,9 +117,15 @@ static ready_chunk_t* find_ready_chunk(download_aggregator_t *agg, uint32_t inde
 static void remove_ready_chunk(download_aggregator_t *agg, uint32_t index) {
     for (uint32_t i = 0; i < agg->buffer_count; i++) {
         if (agg->buffers[i].index == index) {
-            ready_chunk_t *last = &agg->buffers[agg->buffer_count - 1];
+            // Safe removal - zero out the data pointer first
+            agg->buffers[i].data = NULL;
+            agg->buffers[i].size = 0;
+
+            // Shift remaining chunks
             if (i < agg->buffer_count - 1) {
-                agg->buffers[i] = *last;
+                for (uint32_t j = i; j < agg->buffer_count - 1; j++) {
+                    agg->buffers[j] = agg->buffers[j + 1];
+                }
             }
             agg->buffer_count--;
             return;
@@ -135,6 +141,17 @@ static void aggregator_add_chunk(download_aggregator_t *agg, ready_chunk_t *rc) 
         pthread_mutex_unlock(&agg->lock);
         if (rc->data) free(rc->data);
         return;
+    }
+
+    // check for duplicates - each chunk index should only appear once
+    for (uint32_t i = 0; i < agg->buffer_count; i++) {
+        if (agg->buffers[i].index == rc->index) {
+            // Duplicate chunk - this should not happen!
+            printf("[DL-AGGREGATOR] WARNING: Duplicate chunk index %u received\n", rc->index);
+            pthread_mutex_unlock(&agg->lock);
+            if (rc->data) free(rc->data);
+            return;  // Ignore duplicate
+        }
     }
 
     if (agg->buffer_count == agg->buffer_cap) {
@@ -226,6 +243,26 @@ static void* download_sender_loop(void* arg) {
     pthread_t current_thread = pthread_self();
     printf("[DL-SENDER-%lu] Loop started. Next expected index: %u, total=%u\n",
            (unsigned long)current_thread, agg->next_index_to_send, agg->total_chunks);
+
+    // handle empty file (0 chunks)
+    if (agg->total_chunks == 0) {
+        printf("[DL-SENDER-%lu] Empty file (0 chunks), sending DOWNLOAD_DONE immediately\n",
+               (unsigned long)current_thread);
+        send_frame(cfd, OP_DOWNLOAD_DONE, NULL, 0);
+        printf("[ENGINE] DOWNLOAD_DONE\n");
+        printf("[DL-SENDER-%lu] Download completed successfully\n",
+               (unsigned long)current_thread);
+
+        // Cleanup
+        pthread_mutex_destroy(&agg->lock);
+        pthread_cond_destroy(&agg->ready_cond);
+        if (agg->manifest_chunks) {
+            free(agg->manifest_chunks);
+        }
+        free(agg->buffers);
+        free(agg);
+        return NULL;
+    }
 
     while (agg->next_index_to_send < agg->total_chunks) {
         pthread_mutex_lock(&agg->lock);
@@ -386,7 +423,14 @@ void handle_download(int cfd, const uint8_t *payload, uint32_t len) {
     printf("[DL] parse_manifest_chunks n_chunks=%d\n", n_chunks);
 
     if (n_chunks <= 0) {
-        send_error(cfd, "E_PROTO", "Malformed manifest");
+        if (n_chunks < 0) {
+            send_error(cfd, "E_PROTO", "Malformed manifest");
+        } else {
+            // Empty file
+            printf("[DL] Empty file (0 chunks), sending OP_DOWNLOAD_DONE\n");
+            send_frame(cfd, OP_DOWNLOAD_DONE, NULL, 0);
+        }
+        if (chunks) free(chunks);
         return;
     }
 

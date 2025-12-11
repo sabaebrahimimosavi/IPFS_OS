@@ -148,15 +148,52 @@ class Handler(BaseHTTPRequestHandler):
 
         msgs = [frame(OP_DOWNLOAD_START, cid.encode("utf-8"))]
 
-        self.send_response(200)
-        self.send_header("Content-Type", "application/octet-stream")
-        self.end_headers()
+        # Check first message for errors before sending 200 !!!!!!
+        try:
+            gen = engine_call(msgs)
+            first_op, first_payload = next(gen)
 
-        for op, payload in engine_call(msgs):
-            if op == OP_DOWNLOAD_CHUNK and payload:
-                self.wfile.write(payload)
+            if first_op == 0xFF:  # OP_ERROR
+                error_msg = first_payload.decode("utf-8", errors="replace")
+                self.send_error(400, f"Engine error:  {error_msg}")
+                return
+
+            # No error, send 200
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.end_headers()
+
+            # Send first chunk
+            if first_op == 0x91:  # OP_DOWNLOAD_CHUNK
+                self.wfile.write(first_payload)
                 self.wfile.flush()
-            # OP_DOWNLOAD_DONE ends the stream
+
+            # Send remaining chunks
+            for op, payload in gen:
+                if op == 0x91:  # OP_DOWNLOAD_CHUNK
+                    self.wfile. write(payload)
+                    self.wfile.flush()
+                elif op == 0x92:  # OP_DOWNLOAD_DONE
+                    break
+
+        except StopIteration:
+            # Empty file
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        except Exception as e:
+            print(f"[GATEWAY] Download error: {e}")
+            try:
+                self.send_error(502, "Download failed")
+            except:
+                pass
+        #
+        # for op, payload in engine_call(msgs):
+        #     if op == OP_DOWNLOAD_CHUNK and payload:
+        #         self.wfile.write(payload)
+        #         self.wfile.flush()
+        #     # OP_DOWNLOAD_DONE ends the stream
 
 def run(host='127.0.0.1', port=9000):
     srv = ThreadingHTTPServer((host, port), Handler)

@@ -141,9 +141,26 @@ void handle_upload_start(int cfd, upload_S *sess, const uint8_t *payload, uint32
 
     sess->chunk_size = chunk_size;
 
-    // Hash algorithm (we still only support blake3)
-    strncpy(sess->hash_algo, "blake3", sizeof(sess->hash_algo) - 1);
-    sess->hash_algo[sizeof(sess->hash_algo) - 1] = '\0';
+    // Hash algorithm selection via HASH_ALGO env var (default: blake3).
+    // Currently, we only implement blake3; any other value is rejected.
+    const char *env_hash = getenv("HASH_ALGO");
+    if (!env_hash || env_hash[0] == '\0') {
+        // No env var: default to blake3
+        strncpy(sess->hash_algo, "blake3", sizeof(sess->hash_algo) - 1);
+        sess->hash_algo[sizeof(sess->hash_algo) - 1] = '\0';
+    } else if (strcmp(env_hash, "blake3") == 0) {
+        strncpy(sess->hash_algo, "blake3", sizeof(sess->hash_algo) - 1);
+        sess->hash_algo[sizeof(sess->hash_algo) - 1] = '\0';
+    } else {
+        // Unsupported algorithm requested: fail fast so behavior is explicit.
+        printf("[ENGINE] ERROR: Unsupported HASH_ALGO='%s' (only 'blake3' is implemented)\n",
+               env_hash);
+        send_error(cfd, "E_HASH_ALGO",
+                   "Unsupported HASH_ALGO (only 'blake3' is supported)");
+        // session is not initialized; caller will close the connection
+        memset(sess, 0, sizeof(*sess));
+        return;
+    }
 
     snprintf(sess->temp_manifest_path,sizeof(sess->temp_manifest_path),
              "manifests/%s.tmp",sess->filename);
@@ -153,8 +170,8 @@ void handle_upload_start(int cfd, upload_S *sess, const uint8_t *payload, uint32
     sess->tasks_in_progress = 0;
     sess->next_index = 0;
 
-    printf("[ENGINE] UPLOAD_START: %s (CHUNK_SIZE=%u)\n",
-           sess->filename, sess->chunk_size);
+    printf("[ENGINE] UPLOAD_START: %s (CHUNK_SIZE=%u, HASH_ALGO=%s)\n",
+           sess->filename, sess->chunk_size, sess->hash_algo);
 }
 
 void handle_upload_chunk(int cfd,upload_S *sess,const uint8_t *payload,uint32_t len){
